@@ -23,8 +23,8 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
 // IN THE SOFTWARE.
 // ----------------------------------------------------------------------------
-
 #include <Eigen/Eigenvalues>
+#include <iostream>
 
 #include "Open3D/Geometry/KDTreeFlann.h"
 #include "Open3D/Geometry/PointCloud.h"
@@ -131,7 +131,7 @@ Eigen::Vector3d ComputeEigenvector1(const Eigen::Matrix3d &A,
     }
 }
 
-Eigen::Vector3d FastEigen3x3(Eigen::Matrix3d &A) {
+Eigen::Vector3d FastEigen3x3(Eigen::Matrix3d &A, double &ret_eval) {
     // Previous version based on:
     // https://en.wikipedia.org/wiki/Eigenvalue_algorithm#3.C3.973_matrices
     // Current version based on
@@ -182,27 +182,33 @@ Eigen::Vector3d FastEigen3x3(Eigen::Matrix3d &A) {
             evec2 = ComputeEigenvector0(A, eval(2));
             if (eval(2) < eval(0) && eval(2) < eval(1)) {
                 A *= max_coeff;
+                ret_eval = eval(2);
                 return evec2;
             }
             evec1 = ComputeEigenvector1(A, evec2, eval(1));
             A *= max_coeff;
             if (eval(1) < eval(0) && eval(1) < eval(2)) {
+                ret_eval = eval(1);
                 return evec1;
             }
             evec0 = evec1.cross(evec2);
+            ret_eval = eval(0);
             return evec0;
         } else {
             evec0 = ComputeEigenvector0(A, eval(0));
             if (eval(0) < eval(1) && eval(0) < eval(2)) {
                 A *= max_coeff;
+                ret_eval = eval(0);
                 return evec0;
             }
             evec1 = ComputeEigenvector1(A, evec0, eval(1));
             A *= max_coeff;
             if (eval(1) < eval(0) && eval(1) < eval(2)) {
+                ret_eval = eval(1);
                 return evec1;
             }
             evec2 = evec0.cross(evec1);
+            ret_eval = eval(2);
             return evec2;
         }
     } else {
@@ -219,6 +225,7 @@ Eigen::Vector3d FastEigen3x3(Eigen::Matrix3d &A) {
 
 Eigen::Vector3d ComputeNormal(const PointCloud &cloud,
                               const std::vector<int> &indices,
+                              double &error,
                               bool fast_normal_computation) {
     if (indices.size() == 0) {
         return Eigen::Vector3d::Zero();
@@ -250,7 +257,7 @@ Eigen::Vector3d ComputeNormal(const PointCloud &cloud,
     covariance(2, 1) = covariance(1, 2);
 
     if (fast_normal_computation) {
-        return FastEigen3x3(covariance);
+        return FastEigen3x3(covariance, error);
     } else {
         Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> solver;
         solver.compute(covariance, Eigen::ComputeEigenvectors);
@@ -268,6 +275,7 @@ bool PointCloud::EstimateNormals(
     bool has_normal = HasNormals();
     if (HasNormals() == false) {
         normals_.resize(points_.size());
+        errors_.resize(points_.size());
     }
     KDTreeFlann kdtree;
     kdtree.SetGeometry(*this);
@@ -278,8 +286,10 @@ bool PointCloud::EstimateNormals(
         std::vector<int> indices;
         std::vector<double> distance2;
         Eigen::Vector3d normal;
+        double error = 99;
         if (kdtree.Search(points_[i], search_param, indices, distance2) >= 3) {
-            normal = ComputeNormal(*this, indices, fast_normal_computation);
+            normal = ComputeNormal(*this, indices, error,
+                                   fast_normal_computation);
             if (normal.norm() == 0.0) {
                 if (has_normal) {
                     normal = normals_[i];
@@ -290,9 +300,16 @@ bool PointCloud::EstimateNormals(
             if (has_normal && normal.dot(normals_[i]) < 0.0) {
                 normal *= -1.0;
             }
+
+            if (normal.dot(points_[i]) < 0.0) {
+                normal *= -1.0;
+            }
+
             normals_[i] = normal;
+            errors_[i] = error;
         } else {
             normals_[i] = Eigen::Vector3d(0.0, 0.0, 1.0);
+            errors_[i] = -1;
         }
     }
 
